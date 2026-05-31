@@ -385,6 +385,9 @@ async def _run_agentic_background(task: BrowserTask, req: ExecuteRequest, execut
             headless=HEADLESS,
             recordings_path=RECORDINGS_PATH,
             snapshots_path=SNAPSHOTS_PATH,
+            use_vertexai=explorer.use_vertexai,
+            vertexai_project=explorer.vertexai_project,
+            vertexai_location=explorer.vertexai_location,
         )
 
         logger.info(f"Agentic execution of '{task.name}' [{execution.execution_id}]: {prompt} (max {task.max_agent_steps} steps)")
@@ -509,6 +512,9 @@ async def start_exploration(req: ExploreRequest, background_tasks: BackgroundTas
         headless=HEADLESS,
         recordings_path=RECORDINGS_PATH,
         snapshots_path=SNAPSHOTS_PATH,
+        use_vertexai=explorer.use_vertexai,
+        vertexai_project=explorer.vertexai_project,
+        vertexai_location=explorer.vertexai_location,
     )
 
     # Pre-register a "running" placeholder so polling doesn't 404

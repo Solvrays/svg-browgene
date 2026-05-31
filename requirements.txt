@@ -1,10 +1,8 @@
-playwright==1.57.0
-browser-use==0.1.37
+playwright==1.58.0
+browser-use==0.12.0
 pyperclip==1.9.0
 gradio==5.10.0
 json-repair
-langchain-mistralai==0.2.4
-langchain-google-vertexai
-uvicorn==0.32.1
-fastapi==0.115.6
-pydantic>=2.10.4
+uvicorn==0.41.0
+fastapi==0.134.0
+pydantic>=2.12.0

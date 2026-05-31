@@ -183,9 +183,9 @@ class Explorer:
         self._explorations[exp_id] = result
 
         try:
-            # Import browser-use (v0.1.x API — Browser/BrowserConfig)
-            from browser_use import Agent
-            from browser_use.browser.browser import Browser, BrowserConfig
+            # Import browser-use (v0.12 API — Agent/BrowserSession/BrowserProfile)
+            from browser_use import Agent, BrowserSession, BrowserProfile
+            from browser_use.browser.profile import ViewportSize
 
             llm = self._create_llm()
             if not llm:
@@ -193,8 +193,7 @@ class Explorer:
                 result.status = "failed"
                 return result
 
-            # Configure browser session with disable_security for SSL issues
-            from browser_use.browser.profile import ViewportSize
+            # Configure browser profile with disable_security for SSL issues
             profile_kwargs: Dict[str, Any] = {
                 "headless": self.headless,
                 "disable_security": True,
@@ -203,8 +202,8 @@ class Explorer:
             if not self.headless:
                 profile_kwargs["window_size"] = ViewportSize(width=self.viewport_width, height=self.viewport_height)
 
-            browser_config = BrowserConfig(**profile_kwargs)
-            browser = Browser(config=browser_config)
+            browser_profile = BrowserProfile(**profile_kwargs)
+            browser = BrowserSession(browser_profile=browser_profile)
 
             # Store active browser for live screenshot capture
             self._active_sessions[exp_id] = browser
@@ -217,14 +216,14 @@ class Explorer:
                 full_task = f"Go to {start_url} — then: {task}"
                 logger.info(f"Task with URL: {full_task}")
 
-            # Create agent (v0.1.37 doesn't support max_steps)
+            # Create agent (v0.12 — pass browser_session)
             agent = Agent(
                 task=full_task,
                 llm=llm,
-                browser=browser,
+                browser_session=browser,
             )
 
-            # Run the agent (max_steps is a run() param in v0.1.37)
+            # Run the agent (max_steps is a run() param)
             agent_result = await agent.run(max_steps=self.max_steps)
 
             # Extract recorded actions and v2-compatible step data from agent history
@@ -248,7 +247,7 @@ class Explorer:
 
             # Close browser
             try:
-                await browser.close()
+                await browser.kill()
             except Exception as stop_err:
                 logger.debug(f"Browser close error (non-fatal): {stop_err}")
             finally:
@@ -330,33 +329,26 @@ class Explorer:
         ]
 
     def _create_llm(self) -> Any:
-        """Create the LLM client for browser-use (using langchain chat models)."""
+        """Create the LLM client for browser-use (native browser_use chat models, v0.12)."""
         try:
             if self.llm_provider == "openai":
-                from langchain_openai import ChatOpenAI
+                from browser_use import ChatOpenAI
                 return ChatOpenAI(model=self.llm_model)
             elif self.llm_provider == "anthropic":
-                from langchain_anthropic import ChatAnthropic
-                return ChatAnthropic(model_name=self.llm_model)
+                from browser_use import ChatAnthropic
+                return ChatAnthropic(model=self.llm_model)
             elif self.llm_provider == "google":
+                from browser_use import ChatGoogle
                 if self.use_vertexai:
-                    # Vertex AI requires langchain_google_vertexai
-                    try:
-                        from langchain_google_vertexai import ChatVertexAI
-                        kwargs: Dict[str, Any] = {"model_name": self.llm_model}
-                        if self.vertexai_project:
-                            kwargs["project"] = self.vertexai_project
-                        if self.vertexai_location:
-                            kwargs["location"] = self.vertexai_location
-                        logger.info(f"Creating ChatVertexAI: project={self.vertexai_project}, location={self.vertexai_location}, model={self.llm_model}")
-                        return ChatVertexAI(**kwargs)
-                    except ImportError:
-                        logger.warning("langchain_google_vertexai not installed, falling back to OpenAI")
-                        from langchain_openai import ChatOpenAI
-                        return ChatOpenAI(model="gpt-4o")
+                    kwargs: Dict[str, Any] = {"model": self.llm_model, "vertexai": True}
+                    if self.vertexai_project:
+                        kwargs["project"] = self.vertexai_project
+                    if self.vertexai_location:
+                        kwargs["location"] = self.vertexai_location
+                    logger.info(f"Creating ChatGoogle (Vertex AI): project={self.vertexai_project}, location={self.vertexai_location}, model={self.llm_model}")
+                    return ChatGoogle(**kwargs)
                 else:
-                    from langchain_google_genai import ChatGoogleGenerativeAI
-                    return ChatGoogleGenerativeAI(model=self.llm_model)
+                    return ChatGoogle(model=self.llm_model)
             else:
                 logger.error(f"Unknown LLM provider: {self.llm_provider}")
                 return None

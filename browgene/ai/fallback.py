@@ -180,8 +180,7 @@ Return JSON with: page_state, error_detected, suggested_action"""
     ) -> Optional[Dict[str, Any]]:
         """Use browser-use AI agent for one autonomous action."""
         try:
-            from browser_use import Agent
-            from langchain_openai import ChatOpenAI
+            from browser_use import Agent, ChatOpenAI
 
             instruction = step.description or f"Perform this action: {step.step_type} with params {params}"
             logger.info(f"browser-use fallback: {instruction}")
@@ -190,7 +189,7 @@ Return JSON with: page_state, error_detected, suggested_action"""
             agent = Agent(
                 task=instruction,
                 llm=llm,
-                browser=None,  # Will need to share the browser context
+                browser_session=None,  # Will need to share the browser context
             )
             result = await agent.run(max_steps=3)
 
