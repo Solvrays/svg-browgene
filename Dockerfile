@@ -55,7 +55,7 @@ ENV RESOLUTION_HEIGHT=1080
 RUN mkdir -p /var/log/supervisor
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-EXPOSE 7788 7793 6080 5901
+EXPOSE 7788 7793 8200 6080 5901
 
 # Create a startup script that can run either mode
 COPY docker-entrypoint.sh /docker-entrypoint.sh
