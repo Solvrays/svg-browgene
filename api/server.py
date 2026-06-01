@@ -843,12 +843,34 @@ async def v2_stop_task(task_id: str):
 
 
 @app.get("/api/v2/tasks/{task_id}/files")
-async def v2_get_task_files(task_id: str):
-    """Get task output files (v2 compatible). Returns empty list for local execution."""
+async def v2_get_task_files(task_id: str, request: Request):
+    """Get task output files (v2 compatible).
+
+    Returns the recorded video (when recording was enabled) as a media item so
+    PulseGene's BrowGene node can download it. Per-step screenshots are surfaced
+    separately via each step's `screenshotUrl`, so they are not duplicated here.
+    URLs are absolute (built from the request host) because the caller fetches
+    `media.url` directly without further base resolution.
+    """
     if task_id not in _v2_tasks:
         raise HTTPException(404, f"Task '{task_id}' not found")
-    # Local execution doesn't produce cloud-hosted files
-    return []
+
+    task_state = _v2_tasks[task_id]
+    host = request.headers.get("host", "localhost:8200")
+    scheme = request.headers.get("x-forwarded-proto", "http")
+    base = f"{scheme}://{host}"
+
+    files: List[Dict[str, Any]] = []
+    video_rel = task_state.get("video_recording_url")
+    if video_rel:
+        content_type = "video/mp4" if video_rel.lower().endswith(".mp4") else "video/webm"
+        files.append({
+            "id": f"video-{task_id}",
+            "type": "video",
+            "contentType": content_type,
+            "url": f"{base}{video_rel}" if video_rel.startswith("/") else video_rel,
+        })
+    return files
 
 
 @app.get("/api/v2/tasks/{task_id}/live-screenshot")
@@ -899,6 +921,43 @@ async def v2_get_session(session_id: str, request: Request):
                 "status": "active" if task_state["status"] == "running" else "closed",
             }
     raise HTTPException(404, f"Session '{session_id}' not found")
+
+
+@app.get("/api/v2/sessions/{session_id}/screenshot")
+async def v2_session_screenshot(session_id: str):
+    """Capture the current live screenshot for a session over plain HTTP.
+
+    Used by the live viewer's HTTP polling fallback. Unlike the WebSocket
+    stream, this works through HTTP-only reverse proxies (e.g. Next.js
+    rewrites) that do not forward WebSocket upgrades.
+    Returns JPEG bytes, or 204 if no active frame is available yet.
+    """
+    # Find the task that owns this session
+    task_id = None
+    for tid, task_state in _v2_tasks.items():
+        if task_state.get("sessionId") == session_id:
+            task_id = tid
+            break
+    if not task_id:
+        return Response(status_code=204)
+
+    exp_id = _v2_tasks[task_id].get("exploration_id")
+    if not exp_id:
+        return Response(status_code=204)
+
+    for exp_instance in [explorer] + list(_v2_active_explorers.values()):
+        screenshot_bytes = await exp_instance.get_live_screenshot(exp_id)
+        if screenshot_bytes:
+            return Response(
+                content=screenshot_bytes,
+                media_type="image/jpeg",
+                headers={
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                },
+            )
+    return Response(status_code=204)
 
 
 @app.websocket("/api/v2/sessions/{session_id}/ws")
@@ -989,72 +1048,59 @@ async def v2_session_live_viewer(session_id: str, request: Request):
   <div id="loader"><div class="spinner"></div><div>Starting browser…</div></div>
   <img id="screen" alt="Live browser view">
   <script>
+    // HTTP screenshot polling. Uses a SAME-ORIGIN relative URL so it works
+    // through HTTP-only reverse proxies (e.g. Next.js rewrites) that do not
+    // forward WebSocket upgrades, and avoids ws:// mixed-content on https pages.
     const img = document.getElementById('screen');
     const loader = document.getElementById('loader');
     const status = document.getElementById('status');
     const statusText = status.querySelector('span');
+    const SHOT_URL = '/api/v2/sessions/{session_id}/screenshot';
+    const POLL_MS = 600;
     let frameCount = 0;
-    let fps = 0;
-    let lastFpsTime = Date.now();
-    let fpsFrames = 0;
+    let misses = 0;
+    let stopped = false;
 
-    function connect() {{
-      const ws = new WebSocket('{ws_scheme}://{host}/api/v2/sessions/{session_id}/ws');
-      ws.binaryType = 'arraybuffer';
-
-      ws.onopen = () => {{
-        statusText.textContent = 'Connected — waiting for frames…';
-      }};
-
-      ws.onmessage = (e) => {{
-        if (typeof e.data === 'string') {{
-          // JSON control message
-          try {{
-            const msg = JSON.parse(e.data);
-            if (msg.type === 'done') {{
-              statusText.textContent = 'Session ended · ' + msg.status + ' · ' + msg.frames + ' frames';
-              status.classList.add('done');
-            }}
-          }} catch(ex) {{}}
-          return;
-        }}
-
-        // Binary frame (JPEG bytes)
-        const blob = new Blob([e.data], {{ type: 'image/jpeg' }});
-        const url = URL.createObjectURL(blob);
-        const prev = img.src;
-        img.src = url;
-        if (prev && prev.startsWith('blob:')) URL.revokeObjectURL(prev);
-
-        if (loader.style.display !== 'none') {{
-          loader.style.display = 'none';
-          img.style.display = 'block';
-        }}
-
-        frameCount++;
-        fpsFrames++;
-        const now = Date.now();
-        if (now - lastFpsTime >= 1000) {{
-          fps = fpsFrames;
-          fpsFrames = 0;
-          lastFpsTime = now;
-        }}
-        statusText.textContent = 'Live · ' + frameCount + ' frames · ' + fps + ' fps';
-      }};
-
-      ws.onclose = (e) => {{
-        if (!status.classList.contains('done')) {{
-          statusText.textContent = 'Disconnected — reconnecting…';
-          setTimeout(connect, 2000);
-        }}
-      }};
-
-      ws.onerror = () => {{
-        statusText.textContent = 'Connection error…';
-      }};
+    function showFrame(blobUrl) {{
+      const prev = img.src;
+      img.src = blobUrl;
+      if (prev && prev.startsWith('blob:')) URL.revokeObjectURL(prev);
+      if (loader.style.display !== 'none') {{
+        loader.style.display = 'none';
+        img.style.display = 'block';
+      }}
+      frameCount++;
+      misses = 0;
+      statusText.textContent = 'Live · ' + frameCount + ' frames';
     }}
 
-    connect();
+    async function poll() {{
+      if (stopped) return;
+      try {{
+        const res = await fetch(SHOT_URL + '?t=' + Date.now(), {{ cache: 'no-store' }});
+        if (res.ok) {{
+          const blob = await res.blob();
+          if (blob && blob.size > 0) {{
+            showFrame(URL.createObjectURL(blob));
+          }}
+        }} else if (res.status === 204) {{
+          // No frame yet. If we've already streamed frames, the session has
+          // likely ended; after several consecutive misses, stop politely.
+          if (frameCount > 0 && ++misses > 8) {{
+            stopped = true;
+            statusText.textContent = 'Session ended · ' + frameCount + ' frames';
+            status.classList.add('done');
+            return;
+          }}
+        }}
+      }} catch (e) {{
+        statusText.textContent = 'Reconnecting…';
+      }}
+      setTimeout(poll, POLL_MS);
+    }}
+
+    statusText.textContent = 'Connecting…';
+    poll();
   </script>
 </body>
 </html>"""

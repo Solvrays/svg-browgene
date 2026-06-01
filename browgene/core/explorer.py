@@ -202,6 +202,16 @@ class Explorer:
             if not self.headless:
                 profile_kwargs["window_size"] = ViewportSize(width=self.viewport_width, height=self.viewport_height)
 
+            # Enable Playwright video recording when a recordings path is set.
+            # browser-use 0.12 exposes this via BrowserProfile.record_video_dir;
+            # the .webm is flushed to disk when the browser context closes.
+            if self.recordings_path:
+                Path(self.recordings_path).mkdir(parents=True, exist_ok=True)
+                profile_kwargs["record_video_dir"] = self.recordings_path
+                profile_kwargs["record_video_size"] = ViewportSize(
+                    width=self.viewport_width, height=self.viewport_height
+                )
+
             browser_profile = BrowserProfile(**profile_kwargs)
             browser = BrowserSession(browser_profile=browser_profile)
 
@@ -417,7 +427,17 @@ class Explorer:
                 state = getattr(entry, 'state', None)
                 if not state:
                     continue
-                screenshot_b64 = getattr(state, 'screenshot', None)
+                # browser-use 0.12 stores screenshots on disk; read via
+                # get_screenshot() (returns base64). Fall back to the legacy
+                # inline `screenshot` attribute for older versions.
+                screenshot_b64 = None
+                if hasattr(state, 'get_screenshot'):
+                    try:
+                        screenshot_b64 = state.get_screenshot()
+                    except Exception:
+                        screenshot_b64 = None
+                if not screenshot_b64:
+                    screenshot_b64 = getattr(state, 'screenshot', None)
                 if not screenshot_b64 or not isinstance(screenshot_b64, str):
                     continue
 
@@ -446,7 +466,14 @@ class Explorer:
             try:
                 last_state = getattr(history[-1], 'state', None)
                 if last_state:
-                    final_ss = getattr(last_state, 'screenshot', None)
+                    final_ss = None
+                    if hasattr(last_state, 'get_screenshot'):
+                        try:
+                            final_ss = last_state.get_screenshot()
+                        except Exception:
+                            final_ss = None
+                    if not final_ss:
+                        final_ss = getattr(last_state, 'screenshot', None)
                     if final_ss and isinstance(final_ss, str):
                         result.final_screenshot = f"/api/browgene/snapshots/snapshot-{exp_id}-step{len(history) - 1}.png"
             except Exception:
@@ -462,19 +489,23 @@ class Explorer:
             return
 
         try:
-            # browser-use creates .webm files in the record_video_dir
-            video_files = sorted(
-                rec_dir.glob("*.webm"),
-                key=lambda f: f.stat().st_mtime,
-                reverse=True,
-            )
-            if not video_files:
-                # Also check for .mp4 files
-                video_files = sorted(
-                    rec_dir.glob("*.mp4"),
-                    key=lambda f: f.stat().st_mtime,
-                    reverse=True,
-                )
+            # Playwright finalizes the .webm only when the browser context
+            # closes, which can lag a moment after browser.kill(). Poll briefly
+            # for a freshly-written recording. Ignore files already renamed by a
+            # previous task (browgene-*) so we don't attach a stale recording.
+            def _find_new_video() -> list:
+                candidates = [
+                    f for f in (list(rec_dir.glob("*.webm")) + list(rec_dir.glob("*.mp4")))
+                    if not f.name.startswith("browgene-")
+                ]
+                return sorted(candidates, key=lambda f: f.stat().st_mtime, reverse=True)
+
+            video_files = _find_new_video()
+            waited = 0.0
+            while not video_files and waited < 5.0:
+                time.sleep(0.5)
+                waited += 0.5
+                video_files = _find_new_video()
 
             if video_files:
                 latest = video_files[0]
