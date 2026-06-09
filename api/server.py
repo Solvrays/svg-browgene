@@ -86,7 +86,7 @@ Path(SNAPSHOTS_PATH).mkdir(parents=True, exist_ok=True)
 
 # Default LLM provider: use google/Vertex AI if enabled, otherwise fall back to openai
 _default_provider = "google" if USE_VERTEXAI else "openai"
-_default_model = "gemini-2.0-flash" if USE_VERTEXAI else "gpt-4o"
+_default_model = "gemini-3.5-flash" if USE_VERTEXAI else "gpt-4o"
 
 task_manager = TaskManager(tasks_dir=TASKS_DIR)
 explorer = Explorer(
@@ -743,14 +743,18 @@ async def _run_v2_task(task_id: str, req: V2CreateTaskRequest):
 
     try:
         max_steps = req.maxSteps or 25
-        # Extract viewport dimensions from request metadata (sent by PulseGene BrowGene node)
+        # Extract viewport dimensions and LLM config from request metadata (sent by PulseGene BrowGene node)
         meta = req.metadata or {}
         viewport_w = int(meta.get("window_w", 1920))
         viewport_h = int(meta.get("window_h", 1080))
+        # Prefer per-request model/provider from metadata; fall back to server defaults
+        req_llm_model = meta.get("llm_model_name") or explorer.llm_model
+        req_llm_provider = meta.get("llm_provider") or explorer.llm_provider
+        logger.info(f"v2 task [{task_id}] using llm_provider={req_llm_provider}, llm_model={req_llm_model}")
         # v2 tasks always run headless — the live video stream provides the visual
         agent_explorer = Explorer(
-            llm_provider=explorer.llm_provider,
-            llm_model=explorer.llm_model,
+            llm_provider=req_llm_provider,
+            llm_model=req_llm_model,
             max_steps=max_steps,
             headless=True,
             recordings_path=RECORDINGS_PATH if req.enableRecording else None,
