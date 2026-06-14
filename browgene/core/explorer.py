@@ -194,16 +194,31 @@ class Explorer:
                 return result
 
             # Configure browser session with disable_security for SSL issues
-            from browser_use.browser.profile import ViewportSize
-            profile_kwargs: Dict[str, Any] = {
-                "headless": self.headless,
-                "disable_security": True,
-                "viewport": ViewportSize(width=self.viewport_width, height=self.viewport_height),
-            }
-            if not self.headless:
-                profile_kwargs["window_size"] = ViewportSize(width=self.viewport_width, height=self.viewport_height)
-
-            browser_config = BrowserConfig(**profile_kwargs)
+            # browser-use 0.2+ uses browser_use.browser.profile.ViewportSize
+            # browser-use 0.1.x uses BrowserContextConfig + BrowserContextWindowSize
+            try:
+                from browser_use.browser.profile import ViewportSize
+                profile_kwargs: Dict[str, Any] = {
+                    "headless": self.headless,
+                    "disable_security": True,
+                    "viewport": ViewportSize(width=self.viewport_width, height=self.viewport_height),
+                }
+                if not self.headless:
+                    profile_kwargs["window_size"] = ViewportSize(width=self.viewport_width, height=self.viewport_height)
+                browser_config = BrowserConfig(**profile_kwargs)
+            except ImportError:
+                # browser-use v0.1.x — viewport via BrowserContextConfig
+                from browser_use.browser.context import BrowserContextConfig, BrowserContextWindowSize
+                new_context_config = BrowserContextConfig(
+                    browser_window_size=BrowserContextWindowSize(
+                        width=self.viewport_width, height=self.viewport_height
+                    )
+                )
+                browser_config = BrowserConfig(
+                    headless=self.headless,
+                    disable_security=True,
+                    new_context_config=new_context_config,
+                )
             browser = Browser(config=browser_config)
 
             # Store active browser for live screenshot capture
