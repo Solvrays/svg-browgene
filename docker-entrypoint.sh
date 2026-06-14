@@ -23,8 +23,13 @@ fi
 
 # Check the mode and start the appropriate service
 if [ "$BROWGENE_MODE" = "api" ]; then
-    echo "Starting BrowGene API server on port ${API_PORT}..."
     echo "DISPLAY is set to: $DISPLAY"
+    # Start the v2 agentic server (browser-use 0.12) in the background on :8200
+    BROWGENE_V2_PORT="${BROWGENE_PORT:-8200}"
+    echo "Starting BrowGene v2 agentic server on port ${BROWGENE_V2_PORT}..."
+    BROWGENE_PORT="${BROWGENE_V2_PORT}" python -m uvicorn api.server:app --host 0.0.0.0 --port ${BROWGENE_V2_PORT} &
+    # Start the legacy script API in the foreground on :7793
+    echo "Starting BrowGene script API server on port ${API_PORT}..."
     exec python -m uvicorn api_server:app --host 0.0.0.0 --port ${API_PORT}
 else
     echo "Starting BrowGene Gradio interface..."
