@@ -183,9 +183,9 @@ class Explorer:
         self._explorations[exp_id] = result
 
         try:
-            # Import browser-use (v0.1.x API — Browser/BrowserConfig)
-            from browser_use import Agent
-            from browser_use.browser.browser import Browser, BrowserConfig
+            # Import browser-use (v0.12 API — Agent/BrowserSession/BrowserProfile)
+            from browser_use import Agent, BrowserSession, BrowserProfile
+            from browser_use.browser.profile import ViewportSize
 
             llm = self._create_llm()
             if not llm:
@@ -193,33 +193,27 @@ class Explorer:
                 result.status = "failed"
                 return result
 
-            # Configure browser session with disable_security for SSL issues
-            # browser-use 0.2+ uses browser_use.browser.profile.ViewportSize
-            # browser-use 0.1.x uses BrowserContextConfig + BrowserContextWindowSize
-            try:
-                from browser_use.browser.profile import ViewportSize
-                profile_kwargs: Dict[str, Any] = {
-                    "headless": self.headless,
-                    "disable_security": True,
-                    "viewport": ViewportSize(width=self.viewport_width, height=self.viewport_height),
-                }
-                if not self.headless:
-                    profile_kwargs["window_size"] = ViewportSize(width=self.viewport_width, height=self.viewport_height)
-                browser_config = BrowserConfig(**profile_kwargs)
-            except ImportError:
-                # browser-use v0.1.x — viewport via BrowserContextConfig
-                from browser_use.browser.context import BrowserContextConfig, BrowserContextWindowSize
-                new_context_config = BrowserContextConfig(
-                    browser_window_size=BrowserContextWindowSize(
-                        width=self.viewport_width, height=self.viewport_height
-                    )
+            # Configure browser profile with disable_security for SSL issues
+            profile_kwargs: Dict[str, Any] = {
+                "headless": self.headless,
+                "disable_security": True,
+                "viewport": ViewportSize(width=self.viewport_width, height=self.viewport_height),
+            }
+            if not self.headless:
+                profile_kwargs["window_size"] = ViewportSize(width=self.viewport_width, height=self.viewport_height)
+
+            # Enable Playwright video recording when a recordings path is set.
+            # browser-use 0.12 exposes this via BrowserProfile.record_video_dir;
+            # the .webm is flushed to disk when the browser context closes.
+            if self.recordings_path:
+                Path(self.recordings_path).mkdir(parents=True, exist_ok=True)
+                profile_kwargs["record_video_dir"] = self.recordings_path
+                profile_kwargs["record_video_size"] = ViewportSize(
+                    width=self.viewport_width, height=self.viewport_height
                 )
-                browser_config = BrowserConfig(
-                    headless=self.headless,
-                    disable_security=True,
-                    new_context_config=new_context_config,
-                )
-            browser = Browser(config=browser_config)
+
+            browser_profile = BrowserProfile(**profile_kwargs)
+            browser = BrowserSession(browser_profile=browser_profile)
 
             # Store active browser for live screenshot capture
             self._active_sessions[exp_id] = browser
@@ -232,14 +226,14 @@ class Explorer:
                 full_task = f"Go to {start_url} — then: {task}"
                 logger.info(f"Task with URL: {full_task}")
 
-            # Create agent (v0.1.37 doesn't support max_steps)
+            # Create agent (v0.12 — pass browser_session)
             agent = Agent(
                 task=full_task,
                 llm=llm,
-                browser=browser,
+                browser_session=browser,
             )
 
-            # Run the agent (max_steps is a run() param in v0.1.37)
+            # Run the agent (max_steps is a run() param)
             agent_result = await agent.run(max_steps=self.max_steps)
 
             # Extract recorded actions and v2-compatible step data from agent history
@@ -263,7 +257,7 @@ class Explorer:
 
             # Close browser
             try:
-                await browser.close()
+                await browser.kill()
             except Exception as stop_err:
                 logger.debug(f"Browser close error (non-fatal): {stop_err}")
             finally:
@@ -345,33 +339,26 @@ class Explorer:
         ]
 
     def _create_llm(self) -> Any:
-        """Create the LLM client for browser-use (using langchain chat models)."""
+        """Create the LLM client for browser-use (native browser_use chat models, v0.12)."""
         try:
             if self.llm_provider == "openai":
-                from langchain_openai import ChatOpenAI
+                from browser_use import ChatOpenAI
                 return ChatOpenAI(model=self.llm_model)
             elif self.llm_provider == "anthropic":
-                from langchain_anthropic import ChatAnthropic
-                return ChatAnthropic(model_name=self.llm_model)
+                from browser_use import ChatAnthropic
+                return ChatAnthropic(model=self.llm_model)
             elif self.llm_provider == "google":
+                from browser_use import ChatGoogle
                 if self.use_vertexai:
-                    # Vertex AI requires langchain_google_vertexai
-                    try:
-                        from langchain_google_vertexai import ChatVertexAI
-                        kwargs: Dict[str, Any] = {"model_name": self.llm_model}
-                        if self.vertexai_project:
-                            kwargs["project"] = self.vertexai_project
-                        if self.vertexai_location:
-                            kwargs["location"] = self.vertexai_location
-                        logger.info(f"Creating ChatVertexAI: project={self.vertexai_project}, location={self.vertexai_location}, model={self.llm_model}")
-                        return ChatVertexAI(**kwargs)
-                    except ImportError:
-                        logger.warning("langchain_google_vertexai not installed, falling back to OpenAI")
-                        from langchain_openai import ChatOpenAI
-                        return ChatOpenAI(model="gpt-4o")
+                    kwargs: Dict[str, Any] = {"model": self.llm_model, "vertexai": True}
+                    if self.vertexai_project:
+                        kwargs["project"] = self.vertexai_project
+                    if self.vertexai_location:
+                        kwargs["location"] = self.vertexai_location
+                    logger.info(f"Creating ChatGoogle (Vertex AI): project={self.vertexai_project}, location={self.vertexai_location}, model={self.llm_model}")
+                    return ChatGoogle(**kwargs)
                 else:
-                    from langchain_google_genai import ChatGoogleGenerativeAI
-                    return ChatGoogleGenerativeAI(model=self.llm_model)
+                    return ChatGoogle(model=self.llm_model)
             else:
                 logger.error(f"Unknown LLM provider: {self.llm_provider}")
                 return None
@@ -440,7 +427,17 @@ class Explorer:
                 state = getattr(entry, 'state', None)
                 if not state:
                     continue
-                screenshot_b64 = getattr(state, 'screenshot', None)
+                # browser-use 0.12 stores screenshots on disk; read via
+                # get_screenshot() (returns base64). Fall back to the legacy
+                # inline `screenshot` attribute for older versions.
+                screenshot_b64 = None
+                if hasattr(state, 'get_screenshot'):
+                    try:
+                        screenshot_b64 = state.get_screenshot()
+                    except Exception:
+                        screenshot_b64 = None
+                if not screenshot_b64:
+                    screenshot_b64 = getattr(state, 'screenshot', None)
                 if not screenshot_b64 or not isinstance(screenshot_b64, str):
                     continue
 
@@ -469,7 +466,14 @@ class Explorer:
             try:
                 last_state = getattr(history[-1], 'state', None)
                 if last_state:
-                    final_ss = getattr(last_state, 'screenshot', None)
+                    final_ss = None
+                    if hasattr(last_state, 'get_screenshot'):
+                        try:
+                            final_ss = last_state.get_screenshot()
+                        except Exception:
+                            final_ss = None
+                    if not final_ss:
+                        final_ss = getattr(last_state, 'screenshot', None)
                     if final_ss and isinstance(final_ss, str):
                         result.final_screenshot = f"/api/browgene/snapshots/snapshot-{exp_id}-step{len(history) - 1}.png"
             except Exception:
@@ -485,19 +489,23 @@ class Explorer:
             return
 
         try:
-            # browser-use creates .webm files in the record_video_dir
-            video_files = sorted(
-                rec_dir.glob("*.webm"),
-                key=lambda f: f.stat().st_mtime,
-                reverse=True,
-            )
-            if not video_files:
-                # Also check for .mp4 files
-                video_files = sorted(
-                    rec_dir.glob("*.mp4"),
-                    key=lambda f: f.stat().st_mtime,
-                    reverse=True,
-                )
+            # Playwright finalizes the .webm only when the browser context
+            # closes, which can lag a moment after browser.kill(). Poll briefly
+            # for a freshly-written recording. Ignore files already renamed by a
+            # previous task (browgene-*) so we don't attach a stale recording.
+            def _find_new_video() -> list:
+                candidates = [
+                    f for f in (list(rec_dir.glob("*.webm")) + list(rec_dir.glob("*.mp4")))
+                    if not f.name.startswith("browgene-")
+                ]
+                return sorted(candidates, key=lambda f: f.stat().st_mtime, reverse=True)
+
+            video_files = _find_new_video()
+            waited = 0.0
+            while not video_files and waited < 5.0:
+                time.sleep(0.5)
+                waited += 0.5
+                video_files = _find_new_video()
 
             if video_files:
                 latest = video_files[0]
