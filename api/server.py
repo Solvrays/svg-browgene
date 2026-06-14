@@ -726,6 +726,55 @@ async def v2_create_task(req: V2CreateTaskRequest, request: Request):
     }
 
 
+async def _extract_structured_output(
+    text: str,
+    schema: Dict[str, Any],
+    llm_provider: str,
+    llm_model: str,
+    use_vertexai: bool = False,
+    vertexai_project: str = "",
+    vertexai_location: str = "us-central1",
+) -> Dict[str, Any]:
+    """Use the configured LLM to extract structured JSON from text according to a JSON schema."""
+    import json as _json
+
+    # Build a prompt that instructs the LLM to map the text to the schema
+    schema_str = _json.dumps(schema, indent=2)
+    prompt = (
+        f"Extract structured data from the following text and return ONLY a valid JSON object "
+        f"that conforms to this JSON Schema. Do not include any explanation, markdown, or code fences — "
+        f"just the raw JSON object.\n\n"
+        f"JSON Schema:\n{schema_str}\n\n"
+        f"Text to extract from:\n{text}"
+    )
+
+    if use_vertexai and vertexai_project:
+        import vertexai
+        from vertexai.generative_models import GenerativeModel
+        vertexai.init(project=vertexai_project, location=vertexai_location)
+        model = GenerativeModel(llm_model or "gemini-2.0-flash")
+        response = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: model.generate_content(prompt)
+        )
+        raw = response.text.strip()
+    else:
+        # Fallback: use langchain OpenAI
+        from langchain_openai import ChatOpenAI
+        from langchain_core.messages import HumanMessage
+        llm = ChatOpenAI(model=llm_model or "gpt-4o", temperature=0)
+        response = await llm.ainvoke([HumanMessage(content=prompt)])
+        raw = response.content.strip()
+
+    # Strip markdown fences if present
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+        raw = raw.strip()
+
+    return _json.loads(raw)
+
+
 async def _run_v2_task(task_id: str, req: V2CreateTaskRequest):
     """Background worker for v2-compatible task execution."""
     task_state = _v2_tasks.get(task_id)
@@ -782,6 +831,23 @@ async def _run_v2_task(task_id: str, req: V2CreateTaskRequest):
         task_state["video_recording_url"] = result.video_recording_url
         task_state["steps"] = v2_steps
         task_state["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        # If a structuredOutput schema was requested, extract structured JSON from agent output
+        if req.structuredOutput and result.agent_output:
+            try:
+                structured = await _extract_structured_output(
+                    text=result.agent_output,
+                    schema=req.structuredOutput,
+                    llm_provider=explorer.llm_provider,
+                    llm_model=explorer.llm_model,
+                    use_vertexai=explorer.use_vertexai,
+                    vertexai_project=explorer.vertexai_project,
+                    vertexai_location=explorer.vertexai_location,
+                )
+                task_state["structured_output"] = structured
+                logger.info(f"v2 task [{task_id}] structured extraction complete: {list(structured.keys()) if isinstance(structured, dict) else type(structured)}")
+            except Exception as se:
+                logger.warning(f"v2 task [{task_id}] structured extraction failed (non-fatal): {se}")
 
         logger.info(f"v2 task [{task_id}] {v2_status}: {len(v2_steps)} steps, output={len(result.agent_output or '')} chars")
 
