@@ -45,10 +45,14 @@ app = FastAPI(
     version="2.0.0",
 )
 
+# CORS: explicit allow-list from ALLOWED_ORIGINS (comma-separated). Wildcard +
+# credentials is never allowed; without configured origins fall back to a
+# credential-less wildcard so proxied same-origin use keeps working.
+_allowed_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_allowed_origins or ["*"],
+    allow_credentials=bool(_allowed_origins),
     allow_methods=["*"],
     allow_headers=["*"],
 )
