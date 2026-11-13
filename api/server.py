@@ -67,7 +67,7 @@ SNAPSHOTS_PATH = os.getenv("BROWGENE_SNAPSHOTS_PATH", "./recordings/browgene-sna
 
 # Vertex AI config
 USE_VERTEXAI = os.getenv("BROWGENE_USE_VERTEXAI", "true").lower() == "true"
-VERTEXAI_LOCATION = os.getenv("BROWGENE_VERTEXAI_LOCATION", "us-central1")
+VERTEXAI_LOCATION = os.getenv("BROWGENE_VERTEXAI_LOCATION", "global")
 VERTEXAI_PROJECT = os.getenv("BROWGENE_VERTEXAI_PROJECT", "")
 
 # Auto-detect project_id from Google credentials if not explicitly set
@@ -737,7 +737,7 @@ async def _extract_structured_output(
     llm_model: str,
     use_vertexai: bool = False,
     vertexai_project: str = "",
-    vertexai_location: str = "us-central1",
+    vertexai_location: str = "global",
 ) -> Dict[str, Any]:
     """Use the configured LLM to extract structured JSON from text according to a JSON schema."""
     import json as _json

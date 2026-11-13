@@ -135,7 +135,7 @@ class Explorer:
         # Vertex AI config (used when llm_provider="google")
         use_vertexai: bool = False,
         vertexai_project: Optional[str] = None,
-        vertexai_location: str = "us-central1",
+        vertexai_location: str = "global",
         # Viewport size for screenshots
         viewport_width: int = 1920,
         viewport_height: int = 1080,
